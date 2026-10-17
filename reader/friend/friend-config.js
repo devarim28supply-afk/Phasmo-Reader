@@ -10,7 +10,7 @@ Object.assign(cfg, {
   GameFeedPath: '../soundfeed.txt',                // next to the overlay folder, where the reader writes it (relative to OtherSideSound.exe)
   GameProcess: 'Phasmophobia',
   Profile: 'phasmophobia',
-  SoundNames: [['^Ambient_', '', '']],             // always-on beds, truck, menus, the house's random noise spots
+  SoundNames: require('../phasmo-sound-names.json'),   // Ambient_* (beds, truck, menus, noise spots) hidden, out of breath = player
   Device: 'auto',
   WhisperCaptions: false,
   OwnVoiceCaptions: false,

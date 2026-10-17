@@ -25,6 +25,7 @@ sealed class PhasmoFeed
     readonly HashSet<ulong> sourceCls = new(), listenerCls = new(), clipCls = new();
     // AudioClip instance id (native +8) -> name (+0x30); a playing AudioSource holds its clip's id at native +0x338
     readonly Dictionary<int, string> clipNames = new();
+    readonly HashSet<ulong> known = new(), quiet = new();            // sources seen before; already playing when first seen
     List<ulong> natives = new();
     ulong listener;                                           // native AudioListener on your camera
     readonly Dictionary<ulong, (string name, string src)> playing = new();
@@ -68,9 +69,17 @@ sealed class PhasmoFeed
     // all AudioSources + the enabled listener (heap scan, a few seconds; again every 20 s for new objects)
     public void Scan()
     {
-        natives = m.FindAny(sourceCls, 20000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct().ToList();
+        // one pass over the heap for all three classes (three passes took minutes on a slower PC)
+        var all = new HashSet<ulong>(sourceCls); all.UnionWith(listenerCls); all.UnionWith(clipCls);
+        var hits = m.FindAny(all, 80000);
+        var found = hits.Where(x => sourceCls.Contains(x.value)).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct().ToList();
+        // sources seen for the first time already playing (candles, lamps, trophies in the lobby, loops on a new map):
+        // taken as playing without being shown, so they do not all pop up at once. Ghost sounds still show.
+        foreach (var n in found.Where(n => !known.Contains(n) && m.Ptr(n + 0x380) != 0)) quiet.Add(n);
+        known.UnionWith(found);
+        natives = found;
         ulong best = 0;
-        foreach (var (o, _) in m.FindAny(listenerCls, 1000))
+        foreach (var (o, _) in hits.Where(x => listenerCls.Contains(x.value)))
         {
             ulong n = m.Ptr(o + 0x10);
             if (n == 0 || m.Read<byte>(n + 0x39) == 0) continue;      // +0x38 enabled, +0x39 active (VR rig = 0)
@@ -78,7 +87,7 @@ sealed class PhasmoFeed
             if (Parents(m.Ptr(n + 0x30)).Any(p => p.StartsWith("LocalPCPlayer"))) break;
         }
         listener = best;
-        foreach (var c in m.FindAny(clipCls, 50000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct())
+        foreach (var c in hits.Where(x => clipCls.Contains(x.value)).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct())
         {
             int id = m.I32(c + 8);
             if (!clipNames.ContainsKey(id)) { string s = m.CStr(m.Ptr(c + 0x30), 96); if (s.Length > 0 && s.All(ch => ch >= 32 && ch < 127)) clipNames[id] = s; }
@@ -227,7 +236,7 @@ sealed class PhasmoFeed
             ulong ch = m.Ptr(n + 0x380);
             if (ch == 0)
             {
-                channel.Remove(n);
+                channel.Remove(n); quiet.Remove(n);
                 if (playing.Remove(n)) Emit($"E\t{n}");
                 continue;
             }
@@ -244,6 +253,7 @@ sealed class PhasmoFeed
             double x = wpos?.x ?? 0, y = wpos?.y ?? 0, z = wpos?.z ?? 0;
             var (name, src, flat) = Classify(go, ps, x, y, z);
             playing[n] = (name, src);
+            if (quiet.Remove(n) && src != "ghost") continue;
             if (name == "Footsteps_Player" && src == "player") follow[n] = (g, DateTime.UtcNow, x, y, z);
             if (name is "SpiritBox_Answer" or "GhostWhisper" && clipNames.TryGetValue(m.I32(n + 0x338), out var clip))
             {

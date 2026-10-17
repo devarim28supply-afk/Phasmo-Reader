@@ -1,11 +1,5 @@
 {
-  "SoundNames": [
-    [
-      "^Ambient_",
-      "",
-      ""
-    ]
-  ],
+  "SoundNames": [["^Ambient_","",""],["^Player_Out_of_Breath","Out of breath","Player"],["^Player_KeysSoundEffect","",""]],
   "GameFeedPath": "../soundfeed.txt",
   "ShowHeader": false,
   "ShowColorKey": false,

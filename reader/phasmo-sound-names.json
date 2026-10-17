@@ -1,0 +1,5 @@
+[
+  ["^Ambient_", "", ""],
+  ["^Player_Out_of_Breath", "Out of breath", "Player"],
+  ["^Player_KeysSoundEffect", "", ""]
+]
