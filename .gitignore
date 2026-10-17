@@ -1,2 +1,8 @@
 bin/
 obj/
+*.log
+log.txt
+soundfeed.txt
+phasmo-record.txt
+Thumbs.db
+.DS_Store
