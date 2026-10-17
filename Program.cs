@@ -6,7 +6,50 @@ using PhasmoReader;
 //   PhasmoReader names       try Unity native layouts for each source's GameObject name
 
 const string Game = "Phasmophobia";
-string mode = args.Length > 0 ? args[0] : "probe";
+string mode = args.Length > 0 ? args[0] : "feed";
+
+//   PhasmoReader [feed] [file]   (default) write the live sound feed for the overlay, waits for the game
+if (mode == "feed")
+{
+    string path = args.Length > 1 ? args[1] : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "soundfeed.txt"));
+    using var one = new Mutex(true, "PhasmoReader-" + path.ToLowerInvariant().Replace('\\', '/'), out bool firstRun);
+    if (!firstRun) { Console.WriteLine("The reader is already running."); return 0; }
+    var logStream = new FileStream(Path.Combine(Path.GetDirectoryName(path)!, "reader.log"), FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+    Console.SetOut(new Tee(Console.Out, new StreamWriter(logStream) { AutoFlush = true }));
+    while (true)
+    {
+        Mem? g;
+        while ((g = Mem.Open(Game)) == null) Thread.Sleep(2000);
+        using (g)
+        {
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss} game process {g.Pid} opened READ-ONLY");
+            Thread.Sleep(5000);
+            var feed = new PhasmoFeed(g, path, Console.Out);
+            try
+            {
+                Console.WriteLine("writing " + path);
+                while (g.Alive && !feed.FindClasses()) { Console.WriteLine("  game still loading, trying again"); Thread.Sleep(5000); }
+                var rescan = System.Diagnostics.Stopwatch.StartNew();
+                bool first = true;
+                while (g.Alive)
+                {
+                    if (first || rescan.ElapsedMilliseconds > 20000)
+                    {
+                        feed.Scan();
+                        if (first) Console.WriteLine($"{DateTime.Now:HH:mm:ss} {feed.Count} sound sources, reading");
+                        rescan.Restart(); first = false;
+                    }
+                    feed.Tick();
+                    Thread.Sleep(50);
+                }
+            }
+            catch (Exception e) { Console.WriteLine("reader stopped: " + e.Message); }
+            finally { feed.Close(); }
+        }
+        Console.WriteLine($"{DateTime.Now:HH:mm:ss} game closed, waiting for it to start again");
+        while (System.Diagnostics.Process.GetProcessesByName(Game).Length > 0) Thread.Sleep(2000);
+    }
+}
 
 using var m = Mem.Open(Game);
 if (m == null) { Console.WriteLine("Phasmophobia is not running."); return 1; }
@@ -65,6 +108,83 @@ Console.WriteLine($"sources: {size} (array {cap}); data entries: {dlen} (cap {dc
         p = m.I32(par + (ulong)p * 4);
     }
     return ((float)x, (float)y, (float)z);
+}
+
+// listeners: every UnityEngine.AudioListener object with its parents + world position
+if (mode == "listener")
+{
+    var strs = m.FindBytes(Encoding.ASCII.GetBytes("AudioListener\0"), 200);
+    var cls = new HashSet<ulong>();
+    foreach (var (at, _) in m.FindAny(new HashSet<ulong>(strs), 5000))
+    {
+        ulong k = at - KName;
+        if (m.Ptr(k + KSelf) == k && m.CStr(m.Ptr(k + KNs)) == "UnityEngine") cls.Add(k);
+    }
+    foreach (var (o, _) in m.FindAny(cls, 1000))
+    {
+        ulong n = m.Ptr(o + 0x10); if (n == 0) continue;
+        ulong g = m.Ptr(n + 0x30);
+        string name = m.CStr(m.Ptr(g + 0x60), 64);
+        if (name.Length == 0 || !name.All(c => c >= 32 && c < 127)) continue;
+        ulong tr = m.Ptr(m.Ptr(g + 0x30) + 8), hier = m.Ptr(tr + 0x38); int idx = m.I32(tr + 0x40);
+        ulong par = m.Ptr(hier + 0x20), arr = m.Ptr(hier + 0x30);
+        var names = new List<string>(); int pi = m.I32(par + (ulong)idx * 4);
+        for (int d = 0; pi >= 0 && d < 5; d++) { names.Add(m.CStr(m.Ptr(m.Ptr(m.Ptr(arr + (ulong)pi * 8) + 0x30) + 0x60), 48)); pi = m.I32(par + (ulong)pi * 4); }
+        var w = WorldPos(m.Ptr(hier + 0x18), par, idx);
+        var nb = m.Bytes(n, 0x60);
+        Console.WriteLine($"listener {name} < {string.Join(" < ", names)} @ {w?.x:0.0} {w?.y:0.0} {w?.z:0.0}  native bytes 0x38..0x40: {BitConverter.ToString(nb, 0x38, 8)}");
+    }
+    return 0;
+}
+
+// record: every sound that starts playing -> time, name, parents, position (finds sources again every 20 s)
+if (mode == "record")
+{
+    string outPath = args.Length > 1 ? args[1] : Path.Combine(AppContext.BaseDirectory, "phasmo-record.txt");
+    using var log = new StreamWriter(outPath, true) { AutoFlush = true };
+    var strs = m.FindBytes(Encoding.ASCII.GetBytes("AudioSource\0"), 200);
+    var cls = new HashSet<ulong>();
+    foreach (var (at, _) in m.FindAny(new HashSet<ulong>(strs), 5000))
+    {
+        ulong k = at - KName;
+        if (m.Ptr(k + KSelf) == k && m.CStr(m.Ptr(k + KNs)) == "UnityEngine") cls.Add(k);
+    }
+    Console.WriteLine($"recording to {outPath} (Ctrl+C to stop)");
+    log.WriteLine($"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} recording started");
+    var natives = new List<ulong>();
+    var playing = new HashSet<ulong>();
+    var info = new Dictionary<ulong, string>();
+    var rescan = System.Diagnostics.Stopwatch.StartNew();
+    bool first = true;
+    while (m.Alive)
+    {
+        if (first || rescan.ElapsedMilliseconds > 20000)
+        {
+            natives = m.FindAny(cls, 20000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct().ToList();
+            rescan.Restart(); first = false;
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss} {natives.Count} sources");
+        }
+        foreach (var n in natives)
+        {
+            bool on = m.Ptr(n + 0x380) != 0;
+            if (!on) { playing.Remove(n); continue; }
+            if (!playing.Add(n)) continue;
+            ulong g = m.Ptr(n + 0x30);
+            string name = m.CStr(m.Ptr(g + 0x60), 64);
+            if (name.Length == 0 || !name.All(c => c >= 32 && c < 127)) continue;
+            ulong tr = m.Ptr(m.Ptr(g + 0x30) + 8), hier = m.Ptr(tr + 0x38); int idx = m.I32(tr + 0x40);
+            ulong par = m.Ptr(hier + 0x20), arr = m.Ptr(hier + 0x30);
+            var names = new List<string>();
+            int pi = m.I32(par + (ulong)idx * 4);
+            for (int d = 0; pi >= 0 && d < 4; d++) { names.Add(m.CStr(m.Ptr(m.Ptr(m.Ptr(arr + (ulong)pi * 8) + 0x30) + 0x60), 48)); pi = m.I32(par + (ulong)pi * 4); }
+            var w = WorldPos(m.Ptr(hier + 0x18), par, idx);
+            string line = $"{DateTime.Now:HH:mm:ss.f}  {name}  <  {string.Join(" < ", names)}  @ {w?.x:0.0} {w?.y:0.0} {w?.z:0.0}";
+            log.WriteLine(line);
+            Console.WriteLine(line);
+        }
+        Thread.Sleep(100);
+    }
+    return 0;
 }
 
 // every managed AudioSource object (object header = its Il2CppClass*) -> native -> GameObject name
@@ -220,3 +340,12 @@ for (int i = 0; i < Math.Min(Math.Max(size, dlen), args.Length > 1 ? int.Parse(a
     Console.WriteLine($"{i,3} src 0x{src:X} native 0x{native:X}  {data}");
 }
 return 0;
+
+sealed class Tee(TextWriter a, TextWriter b) : TextWriter
+{
+    public override System.Text.Encoding Encoding => a.Encoding;
+    public override void Write(char c) { a.Write(c); b.Write(c); }
+    public override void Write(string? s) { a.Write(s); b.Write(s); }
+    public override void WriteLine(string? s) { a.WriteLine(s); b.WriteLine(s); }
+    public override void Flush() { a.Flush(); b.Flush(); }
+}

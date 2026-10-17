@@ -158,7 +158,7 @@ sealed class Mem : IDisposable
                 chunks.Add((start + off, (int)Math.Min(0x400000, size - off)));
         int count = 0;
         // one pass over the heap, split over the CPU cores (still only reads)
-        Parallel.ForEach(chunks, () => new List<(ulong, ulong)>(), (c, state, mine) =>
+        Parallel.ForEach(chunks, new ParallelOptions { MaxDegreeOfParallelism = 2 }, () => new List<(ulong, ulong)>(), (c, state, mine) =>
         {
             if (Volatile.Read(ref count) >= max) { state.Stop(); return mine; }
             void Scan(ulong at, byte[] b)
