@@ -249,6 +249,7 @@ public sealed class GameFeed : IDisposable
                 if (same != null)
                 {
                     same.MoveTo(x, y, z, now); same.Time = now; same.Count++;
+                    if (same.Category == "Player") same.Trail.Clear();
                     if (id != "0") { same.Id = id; same.Playing = true; }
                     return true;
                 }
@@ -262,6 +263,8 @@ public sealed class GameFeed : IDisposable
                 if (e == null) return false;
                 e.MoveTo(D(f[2]), D(f[3]), D(f[4]), now);
                 if (e.Category.StartsWith("Ghost")) e.Time = now;   // a moving ghost sound stays on screen while it moves
+                // a player's steps: the mark is where the player is now, no trail of where they were (Kaalob 2026-10-17)
+                if (e.Category == "Player") { e.Time = now; e.Trail.Clear(); }
                 return true;
             }
             case "E" when f.Length >= 2:

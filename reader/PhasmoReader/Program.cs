@@ -310,6 +310,134 @@ if (mode == "all")
     return 0;
 }
 
+// steps [seconds]: player footstep sources (FootstepAudio): which native AudioSource bytes change while walking
+// (the playing flag +0x380 stays 0 for them, so they are probably PlayOneShot)
+if (mode == "steps")
+{
+    var cls = new HashSet<ulong>();
+    foreach (var (at, _) in m.FindAny(new HashSet<ulong>(m.FindBytes(Encoding.ASCII.GetBytes("AudioSource\0"), 200)), 5000))
+    {
+        ulong k = at - KName;
+        if (m.Ptr(k + KSelf) == k && m.CStr(m.Ptr(k + KNs)) == "UnityEngine") cls.Add(k);
+    }
+    var srcs = new List<ulong>();
+    foreach (var n in m.FindAny(cls, 20000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct())
+    {
+        ulong g = m.Ptr(n + 0x30), tr = m.Ptr(m.Ptr(g + 0x30) + 8), hier = m.Ptr(tr + 0x38);
+        int idx = m.I32(tr + 0x40);
+        if (hier == 0 || idx < 0) continue;
+        int pi = m.I32(m.Ptr(hier + 0x20) + (ulong)idx * 4);
+        if (pi < 0) continue;
+        string p0 = m.CStr(m.Ptr(m.Ptr(m.Ptr(m.Ptr(hier + 0x30) + (ulong)pi * 8) + 0x30) + 0x60), 48);
+        if (p0 == "FootstepAudio") srcs.Add(n);
+    }
+    Console.WriteLine($"{srcs.Count} FootstepAudio sources: walk now (seconds: {(args.Length > 1 ? args[1] : "30")})");
+    const int N = 0x800;
+    var prev = srcs.ToDictionary(n => n, n => m.Bytes(n, N));
+    var changes = srcs.ToDictionary(n => n, n => new int[N / 4]);
+    var vals = srcs.ToDictionary(n => n, n => new Dictionary<int, HashSet<uint>>());
+    var end = DateTime.Now.AddSeconds(args.Length > 1 ? int.Parse(args[1]) : 30);
+    while (DateTime.Now < end)
+    {
+        foreach (var n in srcs)
+        {
+            var b = m.Bytes(n, N); if (b.Length < N) continue;
+            for (int q = 0; q < N; q += 4)
+            {
+                uint a = BitConverter.ToUInt32(prev[n], q), c = BitConverter.ToUInt32(b, q);
+                if (a == c) continue;
+                changes[n][q / 4]++;
+                var set = vals[n].TryGetValue(q, out var s) ? s : vals[n][q] = new();
+                if (set.Count < 6) set.Add(c);
+            }
+            prev[n] = b;
+        }
+        Thread.Sleep(20);
+    }
+    foreach (var n in srcs)
+    {
+        Console.WriteLine($"source 0x{n:X}:");
+        for (int q = 0; q < N; q += 4)
+            if (changes[n][q / 4] > 0)
+                Console.WriteLine($"  +0x{q:X3} changed {changes[n][q / 4],4}x  e.g. {string.Join(" ", vals[n][q].Select(v => v.ToString("X")))}");
+    }
+    return 0;
+}
+
+// voice [seconds]: find where a playing AudioSource keeps its AudioClip, then log the clip name of every
+// ghost voice that plays (spirit box answers, whispers), for the subtitle table
+if (mode == "voice")
+{
+    HashSet<ulong> Cls(string name)
+    {
+        var set = new HashSet<ulong>();
+        foreach (var (at, _) in m.FindAny(new HashSet<ulong>(m.FindBytes(Encoding.ASCII.GetBytes(name + "\0"), 200)), 5000))
+        {
+            ulong k = at - KName;
+            if (m.Ptr(k + KSelf) == k && m.CStr(m.Ptr(k + KNs)) == "UnityEngine") set.Add(k);
+        }
+        return set;
+    }
+    bool Ok(string s) => s.Length > 2 && s.All(c => c >= 32 && c < 127);
+
+    // native AudioClips: managed AudioClip +0x10; name = a char* somewhere near the start (count which offset works)
+    var clips = m.FindAny(Cls("AudioClip"), 50000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct().ToList();
+    var nameAt = new Dictionary<int, int>();
+    foreach (var c in clips.Take(400))
+        for (int q = 0x8; q < 0x100; q += 8) if (Ok(m.CStr(m.Ptr(c + (ulong)q), 96))) nameAt[q] = nameAt.GetValueOrDefault(q) + 1;
+    int no = nameAt.Count == 0 ? 0 : nameAt.MaxBy(x => x.Value).Key;
+    Console.WriteLine($"{clips.Count} AudioClips; name char* offsets: {string.Join(" ", nameAt.OrderByDescending(x => x.Value).Take(5).Select(x => $"+0x{x.Key:X}={x.Value}"))} -> using +0x{no:X}");
+    var clipSet = new HashSet<ulong>(clips);
+    var byId = new Dictionary<int, ulong>();
+    foreach (var c in clips) byId.TryAdd(m.I32(c + 8), c);
+    string ClipName(ulong c) => m.CStr(m.Ptr(c + (ulong)no), 96);
+    foreach (var c in clips.Where(c => Regex(ClipName(c))).Take(60)) Console.WriteLine($"  clip {ClipName(c)}");
+    static bool Regex(string s) => System.Text.RegularExpressions.Regex.IsMatch(s, "spirit|evp|whisper|ghost|ouija|voice|answer", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    var natives = m.FindAny(Cls("AudioSource"), 20000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct().ToList();
+    Console.WriteLine($"{natives.Count} AudioSources; watching (Ctrl+C to stop)");
+    var seen = new HashSet<ulong>();
+    var until = DateTime.Now.AddSeconds(args.Length > 1 ? int.Parse(args[1]) : 900);
+    while (m.Alive && DateTime.Now < until)
+    {
+        foreach (var n in natives)
+        {
+            if (m.Ptr(n + 0x380) == 0) { seen.Remove(n); continue; }
+            if (!seen.Add(n)) continue;
+            ulong g = m.Ptr(n + 0x30);
+            string go = m.CStr(m.Ptr(g + 0x60), 64);
+            if (!Ok(go)) continue;
+            // the clip: a direct pointer to a native AudioClip, a pointer one step away, or its instance id
+            var b = m.Bytes(n, 0x800);
+            var hits = new List<string>();
+            for (int q = 0; q + 8 <= b.Length; q += 4)
+            {
+                ulong v = BitConverter.ToUInt64(b, q);
+                int id = BitConverter.ToInt32(b, q);
+                if (q % 8 == 0 && clipSet.Contains(v)) hits.Add($"ptr+0x{q:X}={ClipName(v)}");
+                else if (q % 8 == 0 && v > 0x10000 && v < 0x7FF000000000)
+                    for (int k = 0; k < 0x80; k += 8) { ulong v2 = m.Ptr(v + (ulong)k); if (clipSet.Contains(v2)) hits.Add($"ptr+0x{q:X}->+0x{k:X}={ClipName(v2)}"); }
+                if (id != 0 && byId.TryGetValue(id, out var ci)) hits.Add($"id+0x{q:X}={ClipName(ci)}");
+            }
+            if (args.Length > 2 && args[2] == "at")
+            {
+                // only hits that name a real clip (PPtr = the clip's instance id, native AudioClip +8)
+                var good = new List<string>();
+                for (int q = 0; q + 4 <= b.Length; q += 4)
+                {
+                    int id = BitConverter.ToInt32(b, q);
+                    if (id != 0 && byId.TryGetValue(id, out var ci) && Ok(ClipName(ci))) good.Add($"id+0x{q:X}={ClipName(ci)}");
+                }
+                Console.WriteLine($"{DateTime.Now:HH:mm:ss.f} {go}: {string.Join("  ", good)}");
+                continue;
+            }
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss.f} {go}: {string.Join("  ", hits.Distinct().Take(8))}");
+        }
+        Thread.Sleep(100);
+    }
+    return 0;
+}
+
 if (mode == "names")
 {
     for (int i = 0; i < size; i++)

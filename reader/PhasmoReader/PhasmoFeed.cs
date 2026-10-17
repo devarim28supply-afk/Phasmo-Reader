@@ -25,6 +25,10 @@ sealed class PhasmoFeed
     List<ulong> natives = new();
     ulong listener;                                           // native AudioListener on your camera
     readonly Dictionary<ulong, (string name, string src)> playing = new();
+    readonly Dictionary<ulong, ulong> channel = new();               // native +0x380 while playing: changes per sound played
+    // other players' footstep sources: GameObject, last step, last position sent (Unity metres)
+    readonly Dictionary<ulong, (ulong g, DateTime last, double x, double y, double z)> follow = new();
+    const double FollowSec = 3;                                      // keep moving the mark this long after a step
     readonly Dictionary<ulong, List<string>> parentsOf = new();
     double[]? lastL;
     (double x, double y, double z) you;                       // listener position (Unity metres)
@@ -198,13 +202,18 @@ sealed class PhasmoFeed
         }
         foreach (var n in natives)
         {
-            bool on = m.Ptr(n + 0x380) != 0;
-            if (!on)
+            ulong ch = m.Ptr(n + 0x380);
+            if (ch == 0)
             {
+                channel.Remove(n);
                 if (playing.Remove(n)) Emit($"E\t{n}");
                 continue;
             }
-            if (playing.ContainsKey(n)) continue;
+            // a new channel on a source that is still playing = the next sound started before the last one ended
+            // (a player's footsteps when walking fast: one source, one step after another)
+            bool again = channel.TryGetValue(n, out var was) && was != ch;
+            channel[n] = ch;
+            if (playing.ContainsKey(n) && !again) continue;
             ulong g = m.Ptr(n + 0x30);
             string go = GoName(g);
             if (go == "") { playing[n] = ("", ""); continue; }
@@ -213,6 +222,7 @@ sealed class PhasmoFeed
             double x = wpos?.x ?? 0, y = wpos?.y ?? 0, z = wpos?.z ?? 0;
             var (name, src, flat) = Classify(go, ps, x, y, z);
             playing[n] = (name, src);
+            if (name == "Footsteps_Player" && src == "player") follow[n] = (g, DateTime.UtcNow, x, y, z);
             if (flat || wpos == null) Emit($"2\t{name}\t{src}");
             else
             {
@@ -221,6 +231,18 @@ sealed class PhasmoFeed
             }
             if (Verbose && src != "own" && !name.StartsWith("Ambient_"))
                 log.WriteLine($"{DateTime.Now:HH:mm:ss} {name} ({src}): {go} < {string.Join(" < ", ps)}");
+        }
+        // other players' steps: the mark follows the player between steps (Kaalob: where they are now, not where they were)
+        foreach (var (n, f) in follow.ToList())
+        {
+            if ((DateTime.UtcNow - f.last).TotalSeconds > FollowSec) { follow.Remove(n); continue; }
+            var p = World(f.g);
+            if (p == null) continue;
+            var (x, y, z) = (p.Value.x, p.Value.y, p.Value.z);
+            if (Math.Abs(x - f.x) + Math.Abs(y - f.y) + Math.Abs(z - f.z) < 0.2) continue;
+            follow[n] = (f.g, f.last, x, y, z);
+            var (fx, fy, fz) = ToFeed(x, y, z);
+            Emit($"M\t{n}\t{F(fx)}\t{F(fy)}\t{F(fz)}");
         }
         w.Flush();
         return true;
