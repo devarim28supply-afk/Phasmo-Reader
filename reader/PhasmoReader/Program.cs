@@ -364,6 +364,55 @@ if (mode == "steps")
     return 0;
 }
 
+// clips [seconds]: every sound that starts -> GameObject < parent : clip name (native +0x338 = the clip's instance id,
+// native AudioClip +8 = instance id, +0x30 = name). Sources and clips found again every 20 s.
+if (mode == "clips")
+{
+    HashSet<ulong> Cls(string name)
+    {
+        var set = new HashSet<ulong>();
+        foreach (var (at, _) in m.FindAny(new HashSet<ulong>(m.FindBytes(Encoding.ASCII.GetBytes(name + "\0"), 200)), 5000))
+        {
+            ulong k = at - KName;
+            if (m.Ptr(k + KSelf) == k && m.CStr(m.Ptr(k + KNs)) == "UnityEngine") set.Add(k);
+        }
+        return set;
+    }
+    var srcCls = Cls("AudioSource"); var clipCls = Cls("AudioClip");
+    var names = new Dictionary<int, string>();
+    var natives = new List<ulong>();
+    var chan = new Dictionary<ulong, ulong>();
+    var end = DateTime.Now.AddSeconds(args.Length > 1 ? int.Parse(args[1]) : 1800);
+    var rescan = System.Diagnostics.Stopwatch.StartNew(); bool first = true;
+    while (m.Alive && DateTime.Now < end)
+    {
+        if (first || rescan.ElapsedMilliseconds > 20000)
+        {
+            natives = m.FindAny(srcCls, 20000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct().ToList();
+            foreach (var c in m.FindAny(clipCls, 50000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct())
+                names.TryAdd(m.I32(c + 8), m.CStr(m.Ptr(c + 0x30), 96));
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss} {natives.Count} sources, {names.Count} clips");
+            rescan.Restart(); first = false;
+        }
+        foreach (var n in natives)
+        {
+            ulong ch = m.Ptr(n + 0x380);
+            if (ch == 0) { chan.Remove(n); continue; }
+            if (chan.TryGetValue(n, out var was) && was == ch) continue;
+            chan[n] = ch;
+            ulong g = m.Ptr(n + 0x30);
+            string go = m.CStr(m.Ptr(g + 0x60), 64);
+            ulong tr = m.Ptr(m.Ptr(g + 0x30) + 8), hier = m.Ptr(tr + 0x38); int idx = m.I32(tr + 0x40);
+            int pi = hier == 0 || idx < 0 ? -1 : m.I32(m.Ptr(hier + 0x20) + (ulong)idx * 4);
+            string p0 = pi < 0 ? "" : m.CStr(m.Ptr(m.Ptr(m.Ptr(m.Ptr(hier + 0x30) + (ulong)pi * 8) + 0x30) + 0x60), 48);
+            int id = m.I32(n + 0x338);
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss.f}  {go} < {p0} : {names.GetValueOrDefault(id, "?" + id)}");
+        }
+        Thread.Sleep(50);
+    }
+    return 0;
+}
+
 // voice [seconds]: find where a playing AudioSource keeps its AudioClip, then log the clip name of every
 // ghost voice that plays (spirit box answers, whispers), for the subtitle table
 if (mode == "voice")
