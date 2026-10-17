@@ -167,7 +167,8 @@ sealed class PhasmoFeed
         if (p0.StartsWith("LightSwitch")) return ("lightswitch", "other", false);
         if (p0 == "Radio" || all.Contains("Radio") && !all.Contains("Truck")) return ("Radio", "other", false);
         // always-on beds, truck, menus, house noise spots: Ambient_* (hidden by the Phasmo config)
-        if (go.StartsWith("Noise Spot") || go.Contains("Rain") || go.Contains("Ambien") || go.StartsWith("Floor Vent") ||
+        if (all.Contains("Viewport") || all.Contains("Canvas") || all.Contains("Scroll View") || all.Contains("Settings") ||
+            go.StartsWith("Noise Spot") || go.Contains("Rain") || go.Contains("Ambien") || go.StartsWith("Floor Vent") ||
             go.StartsWith("Moon Altar") || all.Contains("Truck") || all.Contains("AUDIO") || all.Contains("Systems") ||
             go is "volume" or "pitch" or "LOD1" or "Menu Audio" or "Buttons Audio" or "Elevator02" || go.StartsWith("Truck"))
             return ("Ambient_" + Clean(go), "other", false);
