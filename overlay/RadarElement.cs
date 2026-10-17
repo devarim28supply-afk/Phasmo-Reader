@@ -297,10 +297,11 @@ public sealed class RadarElement : FrameworkElement
         }
 
         // --- captions (whisper): last few lines, bottom centre, newest at the bottom
-        if (cfg.WhisperCaptions)
+        // the ghost's words read from the game show even with Whisper captions off (friend package)
         {
             List<CaptionLine> caps; lock (state.Lock) caps = state.Captions.ToList();
-            var live = caps.Where(c => (now - c.Time).TotalSeconds < cfg.CaptionLifetimeSec).TakeLast(Math.Max(1, cfg.CaptionLines)).ToList();
+            var live = caps.Where(c => (cfg.WhisperCaptions || c.FromGame) && (now - c.Time).TotalSeconds < cfg.CaptionLifetimeSec)
+                           .TakeLast(Math.Max(1, cfg.CaptionLines)).ToList();
             if (live.Count > 0)
             {
                 double cfs = cfg.CaptionFontSize * s, crow = cfs * 1.35, cpad = 10 * s;

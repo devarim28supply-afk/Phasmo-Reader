@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace PhasmoReader;
 
@@ -21,7 +22,9 @@ sealed class PhasmoFeed
     readonly Mem m;
     readonly StreamWriter w;
     readonly TextWriter log;
-    readonly HashSet<ulong> sourceCls = new(), listenerCls = new();
+    readonly HashSet<ulong> sourceCls = new(), listenerCls = new(), clipCls = new();
+    // AudioClip instance id (native +8) -> name (+0x30); a playing AudioSource holds its clip's id at native +0x338
+    readonly Dictionary<int, string> clipNames = new();
     List<ulong> natives = new();
     ulong listener;                                           // native AudioListener on your camera
     readonly Dictionary<ulong, (string name, string src)> playing = new();
@@ -57,6 +60,7 @@ sealed class PhasmoFeed
     {
         FindClass("AudioSource", sourceCls);
         FindClass("AudioListener", listenerCls);
+        FindClass("AudioClip", clipCls);
         log.WriteLine($"  AudioSource class {sourceCls.Count}, AudioListener class {listenerCls.Count}");
         return sourceCls.Count > 0 && listenerCls.Count > 0;
     }
@@ -74,6 +78,24 @@ sealed class PhasmoFeed
             if (Parents(m.Ptr(n + 0x30)).Any(p => p.StartsWith("LocalPCPlayer"))) break;
         }
         listener = best;
+        foreach (var c in m.FindAny(clipCls, 50000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct())
+        {
+            int id = m.I32(c + 8);
+            if (!clipNames.ContainsKey(id)) { string s = m.CStr(m.Ptr(c + 0x30), 96); if (s.Length > 0 && s.All(ch => ch >= 32 && ch < 127)) clipNames[id] = s; }
+        }
+    }
+
+    // what the ghost said, from the clip's name (2026-10-17 build): spirit box answers are "Death 4", "Here 2" ...,
+    // whispers (GhostWhisper / parabolic mic) are "ParaSound_F_Get_Out_01", "ParaSound_F_sohungry" ...
+    // null = not words we know how to show
+    static string? Words(string clip, bool spiritBox)
+    {
+        if (spiritBox) { string w = Regex.Replace(clip, @"\s*\d+$", ""); return w.Length > 0 && w.All(char.IsLetter) ? w : null; }
+        if (!clip.StartsWith("ParaSound_")) return null;
+        string s = Regex.Replace(clip, @"^ParaSound_[FM]_|[_ -]?\d+$", "").Replace("shout_", "").Replace('_', ' ').Replace('-', ' ').Trim().ToLowerInvariant();
+        s = s switch { "sohungry" => "so hungry", "cant find me" => "can't find me", _ => s };
+        if (Regex.IsMatch(s, @"^(gasp|(high |slow )?laugh|mutterings|mutters|moan|whisper|breath\w*)$")) return "[" + s + "]";
+        return s.Length > 0 ? char.ToUpperInvariant(s[0]) + s[1..] : null;
     }
 
     public int Count => natives.Count;
@@ -223,6 +245,12 @@ sealed class PhasmoFeed
             var (name, src, flat) = Classify(go, ps, x, y, z);
             playing[n] = (name, src);
             if (name == "Footsteps_Player" && src == "player") follow[n] = (g, DateTime.UtcNow, x, y, z);
+            if (name is "SpiritBox_Answer" or "GhostWhisper" && clipNames.TryGetValue(m.I32(n + 0x338), out var clip))
+            {
+                string? said = Words(clip, name == "SpiritBox_Answer");
+                if (said != null) Emit($"V\t{(name == "SpiritBox_Answer" ? "spiritbox" : "whisper")}\t{said}");
+                if (Verbose) log.WriteLine($"{DateTime.Now:HH:mm:ss} ghost said: {clip} -> {said ?? "(not shown)"}");
+            }
             if (flat || wpos == null) Emit($"2\t{name}\t{src}");
             else
             {

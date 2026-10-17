@@ -413,6 +413,21 @@ if (mode == "clips")
     return 0;
 }
 
+// clipnames: every loaded AudioClip name (for the ghost words table)
+if (mode == "clipnames")
+{
+    var cls = new HashSet<ulong>();
+    foreach (var (at, _) in m.FindAny(new HashSet<ulong>(m.FindBytes(Encoding.ASCII.GetBytes("AudioClip\0"), 200)), 5000))
+    {
+        ulong k = at - KName;
+        if (m.Ptr(k + KSelf) == k && m.CStr(m.Ptr(k + KNs)) == "UnityEngine") cls.Add(k);
+    }
+    foreach (var s in m.FindAny(cls, 50000).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct()
+                       .Select(c => m.CStr(m.Ptr(c + 0x30), 96)).Where(s => s.Length > 0).Distinct().Order())
+        Console.WriteLine(s);
+    return 0;
+}
+
 // voice [seconds]: find where a playing AudioSource keeps its AudioClip, then log the clip name of every
 // ghost voice that plays (spirit box answers, whispers), for the subtitle table
 if (mode == "voice")

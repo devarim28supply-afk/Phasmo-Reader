@@ -267,6 +267,15 @@ public sealed class GameFeed : IDisposable
                 if (e.Category == "Player") { e.Time = now; e.Trail.Clear(); }
                 return true;
             }
+            case "V" when f.Length >= 3:
+            {
+                // V  kind  words: what the ghost said (Phasmo reader: spirit box answer / whisper, from the clip name)
+                string cap = f[1] == "spiritbox" ? $"GHOST (spirit box): {f[2]}" : $"GHOST: {f[2]}";
+                state.Captions.Add(new CaptionLine { Text = cap, Time = now, FromGame = true });
+                if (state.Captions.Count > 60) state.Captions.RemoveAt(0);
+                Log.Write("GHOST LINE " + cap);
+                return true;
+            }
             case "E" when f.Length >= 2:
                 foreach (var e in state.Events.Where(e => e.Id == f[1])) e.Playing = false;
                 return false;
