@@ -63,15 +63,55 @@ sealed class PhasmoFeed
         FindClass("AudioListener", listenerCls);
         FindClass("AudioClip", clipCls);
         log.WriteLine($"  AudioSource class {sourceCls.Count}, AudioListener class {listenerCls.Count}");
+        // the game's own GhostInfo class (no namespace): holds the ghost's type and name during a round
+        foreach (var (at, _) in m.FindAny(new HashSet<ulong>(m.FindBytes(Encoding.ASCII.GetBytes("GhostInfo\0"), 200)), 5000))
+        {
+            ulong k = at - KName;
+            if (m.Ptr(k + KSelf) == k && m.CStr(m.Ptr(k + KNs)) == "") ghostInfoCls.Add(k);
+        }
+        log.WriteLine($"  GhostInfo class {ghostInfoCls.Count}");
         return sourceCls.Count > 0 && listenerCls.Count > 0;
+    }
+
+    // ---- which ghost this round is (Kaalob asked 2026-11-11; checked against a real round: "Jim Anderson", Jinn) ----
+    // GhostInfo object, game v0.19.1.0: +0x28 ghost type (enum below), +0x2C second type (what The Mimic copies now),
+    // +0x44 1 = male, +0x48 name (managed string: length +0x10, UTF-16 text +0x14).
+    readonly HashSet<ulong> ghostInfoCls = new();
+    string lastGhost = "";
+    static readonly string[] GhostTypes = ["Spirit", "Wraith", "Phantom", "Poltergeist", "Banshee", "Jinn", "Mare", "Revenant", "Shade", "Demon",
+        "Yurei", "Oni", "Yokai", "Hantu", "Goryo", "Myling", "Onryo", "The Twins", "Raiju", "Obake", "The Mimic", "Moroi", "Deogen", "Thaye",
+        "", "Gallu", "Dayan", "Obambo", "Kormos", "Aswang", "Deildegast"];
+
+    void ReadGhost(IEnumerable<ulong> objects)
+    {
+        foreach (ulong o in objects)
+        {
+            if (m.Ptr(o + 8) != 0 || m.Ptr(o + 0x10) < 0x100000000) continue;     // a real object: no lock word, has its native half
+            int type = m.I32(o + 0x28), type2 = m.I32(o + 0x2C);
+            if (type < 0 || type >= GhostTypes.Length || GhostTypes[type] == "") continue;
+            ulong sp = m.Ptr(o + 0x48);
+            int len = sp > 0x100000000 ? m.I32(sp + 0x10) : 0;
+            if (len < 3 || len > 40) continue;
+            string name = Encoding.Unicode.GetString(m.Bytes(sp + 0x14, len * 2));
+            if (!name.All(c => char.IsLetter(c) || c is ' ' or '\'' or '-' or '.')) continue;
+            string sex = m.I32(o + 0x44) == 1 ? "male" : "female";
+            string copy = type == 20 && type2 >= 0 && type2 < GhostTypes.Length && type2 != 20 && GhostTypes[type2] != "" ? $", copying {GhostTypes[type2]} now" : "";
+            string line = $"{GhostTypes[type]}{copy} ({name}, {sex})";
+            if (line == lastGhost) return;
+            lastGhost = line;
+            Emit($"V\tghosttype\tThis ghost is: {line}");
+            if (Verbose) log.WriteLine($"{DateTime.Now:HH:mm:ss} ghost type: {line}");
+            return;
+        }
     }
 
     // all AudioSources + the enabled listener (heap scan, a few seconds; again every 20 s for new objects)
     public void Scan()
     {
         // one pass over the heap for all three classes (three passes took minutes on a slower PC)
-        var all = new HashSet<ulong>(sourceCls); all.UnionWith(listenerCls); all.UnionWith(clipCls);
+        var all = new HashSet<ulong>(sourceCls); all.UnionWith(listenerCls); all.UnionWith(clipCls); all.UnionWith(ghostInfoCls);
         var hits = m.FindAny(all, 80000);
+        ReadGhost(hits.Where(x => ghostInfoCls.Contains(x.value)).Select(x => x.at));
         var found = hits.Where(x => sourceCls.Contains(x.value)).Select(x => m.Ptr(x.at + 0x10)).Where(n => n != 0).Distinct().ToList();
         // sources seen for the first time already playing (candles, lamps, trophies in the lobby, loops on a new map):
         // taken as playing without being shown, so they do not all pop up at once. Ghost sounds still show.
