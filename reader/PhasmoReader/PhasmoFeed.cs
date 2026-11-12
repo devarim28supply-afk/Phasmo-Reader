@@ -107,6 +107,20 @@ sealed class PhasmoFeed
         return s.Length > 0 ? char.ToUpperInvariant(s[0]) + s[1..] : null;
     }
 
+    // the ghost's song, from the clip's name (clip names read from the game files, v0.19.1.0):
+    // singing event = "Event_Singing_Feminine01" / "Event_Singing_Masculine01",
+    // music box = "MusicBoxReply_Feminine_Singing01" / "MusicBoxReply_Masculine_Singing01".
+    // Female ghosts sing "Ring Around the Rosie", male ghosts hum a low tune (wiki, Ghost Event page).
+    static string? Song(string clip)
+    {
+        bool box = clip.StartsWith("MusicBoxReply_");
+        if (!box && !clip.StartsWith("Event_Singing_")) return null;
+        string with = box ? " along with the music box" : "";
+        if (clip.Contains("Feminine")) return box ? "[FEMALE ghost sings along with the music box]" : "[FEMALE ghost sings \"Ring Around the Rosie\"]";
+        if (clip.Contains("Masculine")) return $"[MALE ghost hums a low tune{with}]";
+        return null;
+    }
+
     public int Count => natives.Count;
 
     string GoName(ulong g)
@@ -258,8 +272,16 @@ sealed class PhasmoFeed
             if (name is "SpiritBox_Answer" or "GhostWhisper" && clipNames.TryGetValue(m.I32(n + 0x338), out var clip))
             {
                 string? said = Words(clip, name == "SpiritBox_Answer");
+                // whisper clips are "ParaSound_F_..." (female ghost) or "ParaSound_M_..." (male ghost): show which
+                if (said != null && name == "GhostWhisper")
+                    said = (clip.StartsWith("ParaSound_F_") ? "(FEMALE) " : clip.StartsWith("ParaSound_M_") ? "(MALE) " : "") + said;
                 if (said != null) Emit($"V\t{(name == "SpiritBox_Answer" ? "spiritbox" : "whisper")}\t{said}");
                 if (Verbose) log.WriteLine($"{DateTime.Now:HH:mm:ss} ghost said: {clip} -> {said ?? "(not shown)"}");
+            }
+            if (clipNames.TryGetValue(m.I32(n + 0x338), out var songClip) && Song(songClip) is string song)
+            {
+                Emit($"V\tsing\t{song}");
+                if (Verbose) log.WriteLine($"{DateTime.Now:HH:mm:ss} ghost song: {songClip} -> {song}");
             }
             if (flat || wpos == null) Emit($"2\t{name}\t{src}");
             else
